@@ -65,7 +65,7 @@ const ctx = canvas.getContext('2d');
 // =============================================================================
 // SECTION 3: Data Structures & State
 // =============================================================================
-let board = [];
+let board = Array.from({ length: BOARD_ROWS }, () => Array(BOARD_COLS).fill(null));
 let capsule = null;      // active falling capsule
 let nextCapsule = null;
 let gameState = 'MENU';  // MENU SPAWNING FALLING LOCKING CLEARING GRAVITY GAMEOVER WIN PAUSED
