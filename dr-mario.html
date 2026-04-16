@@ -335,10 +335,23 @@ function stepPostClearGravity() {
 // SECTION 7: Input
 // =============================================================================
 function handleAction(code) {
-  if (gameState === 'MENU' || gameState === 'GAMEOVER' || gameState === 'WIN') {
+  if (gameState === 'MENU') {
+    if (code === 'ArrowLeft')  { level = Math.max(0, level - 1); return; }
+    if (code === 'ArrowRight') { level = Math.min(19, level + 1); return; }
+    if (code === 'ArrowUp')    { level = Math.min(19, level + 5); return; }
+    if (code === 'ArrowDown')  { level = Math.max(0, level - 5); return; }
+    if (code === 'Enter' || code === 'Space') { initGame(); return; }
+    return;
+  }
+  if (gameState === 'GAMEOVER') {
+    if (code === 'Enter' || code === 'Space') { initGame(); return; }
+    return;
+  }
+  if (gameState === 'WIN') {
     if (code === 'Enter' || code === 'Space') {
-      level = 0;
+      level = Math.min(19, level + 1);
       initGame();
+      return;
     }
     return;
   }
@@ -572,6 +585,35 @@ function drawGhostCapsule() {
   ctx.globalAlpha = 1.0;
 }
 
+function drawMenuOverlay() {
+  ctx.fillStyle = 'rgba(0,0,0,0.72)';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  ctx.textAlign = 'center';
+  const cx = canvas.width / 2;
+
+  ctx.fillStyle = '#ffdd44';
+  ctx.font = 'bold 30px monospace';
+  ctx.fillText('DR. MARIO', cx, canvas.height / 2 - 60);
+
+  ctx.fillStyle = '#ccddff';
+  ctx.font = 'bold 13px monospace';
+  ctx.fillText('SELECT LEVEL', cx, canvas.height / 2 - 25);
+
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 22px monospace';
+  ctx.fillText(`< ${String(level).padStart(2, '0')} >`, cx, canvas.height / 2 + 8);
+
+  ctx.fillStyle = '#888';
+  ctx.font = '11px monospace';
+  ctx.fillText(`${VIRUS_COUNTS[level]} viruses`, cx, canvas.height / 2 + 30);
+
+  ctx.fillStyle = '#aaaaff';
+  ctx.font = '13px monospace';
+  ctx.fillText('ENTER / SPACE to start', cx, canvas.height / 2 + 60);
+  ctx.textAlign = 'left';
+}
+
 function drawOverlay(text, sub) {
   ctx.fillStyle = 'rgba(0,0,0,0.65)';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -597,11 +639,11 @@ function render() {
   drawSidebar();
 
   if (gameState === 'MENU') {
-    drawOverlay('DR. MARIO', 'ENTER / SPACE to start');
+    drawMenuOverlay();
   } else if (gameState === 'GAMEOVER') {
     drawOverlay('GAME OVER', 'ENTER / SPACE to retry');
   } else if (gameState === 'WIN') {
-    drawOverlay('YOU WIN!', 'ENTER / SPACE to continue');
+    drawOverlay('YOU WIN!', 'ENTER to next level');
   }
 }
 
