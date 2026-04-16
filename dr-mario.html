@@ -68,12 +68,14 @@ const ctx = canvas.getContext('2d');
 let board = [];
 let capsule = null;      // active falling capsule
 let nextCapsule = null;
-let gameState = 'MENU';  // MENU SPAWNING FALLING LOCKING CLEARING GRAVITY GAMEOVER WIN
+let gameState = 'MENU';  // MENU SPAWNING FALLING LOCKING CLEARING GRAVITY GAMEOVER WIN PAUSED
 let score = 0;
 let level = 0;
+let highScore = 0;
 let virusCount = 0;
 let chainCount = 0;
 let clearSet = new Set();  // "row,col" keys of cells being cleared
+let pausedState = null;    // state to restore after unpause
 
 // Timers
 let gravityAccum = 0;
@@ -206,6 +208,7 @@ function spawnCapsule() {
   gravityAccum = 0;
 
   if (!capsuleFits(capsule)) {
+    if (score > highScore) highScore = score;
     gameState = 'GAMEOVER';
     return;
   }
@@ -356,6 +359,18 @@ function handleAction(code) {
     return;
   }
 
+  if (code === 'KeyP') {
+    if (gameState === 'PAUSED') {
+      gameState = pausedState;
+      pausedState = null;
+    } else if (['FALLING','LOCKING','CLEARING','GRAVITY'].includes(gameState)) {
+      pausedState = gameState;
+      gameState = 'PAUSED';
+    }
+    return;
+  }
+
+  if (gameState === 'PAUSED') return;
   if (gameState !== 'FALLING' && gameState !== 'LOCKING') return;
 
   if (code === 'ArrowLeft')  tryMove(0, -1);
@@ -508,27 +523,34 @@ function drawSidebar() {
   ctx.fillStyle = '#ccddff';
   ctx.font = 'bold 13px monospace';
 
-  ctx.fillText('SCORE', sx, 50);
+  ctx.fillText('HI', sx, 30);
+  ctx.fillStyle = '#ffdd44';
+  ctx.font = '13px monospace';
+  ctx.fillText(String(highScore).padStart(7, '0'), sx, 46);
+
+  ctx.fillStyle = '#ccddff';
+  ctx.font = 'bold 13px monospace';
+  ctx.fillText('SCORE', sx, 64);
   ctx.fillStyle = '#ffffff';
   ctx.font = '13px monospace';
-  ctx.fillText(String(score).padStart(7, '0'), sx, 68);
+  ctx.fillText(String(score).padStart(7, '0'), sx, 80);
 
   ctx.fillStyle = '#ccddff';
   ctx.font = 'bold 13px monospace';
-  ctx.fillText('LEVEL', sx, 100);
+  ctx.fillText('LEVEL', sx, 108);
   ctx.fillStyle = '#ffffff';
-  ctx.fillText(String(level).padStart(2, '0'), sx, 118);
+  ctx.fillText(String(level).padStart(2, '0'), sx, 126);
 
   ctx.fillStyle = '#ccddff';
   ctx.font = 'bold 13px monospace';
-  ctx.fillText('VIRUS', sx, 150);
+  ctx.fillText('VIRUS', sx, 156);
   ctx.fillStyle = '#ff6060';
-  ctx.fillText(String(virusCount).padStart(2, '0'), sx, 168);
+  ctx.fillText(String(virusCount).padStart(2, '0'), sx, 174);
 
   // Next capsule preview
   ctx.fillStyle = '#ccddff';
   ctx.font = 'bold 13px monospace';
-  ctx.fillText('NEXT', sx, 210);
+  ctx.fillText('NEXT', sx, 214);
 
   if (nextCapsule) {
     const px = sx;
@@ -644,6 +666,8 @@ function render() {
     drawOverlay('GAME OVER', 'ENTER / SPACE to retry');
   } else if (gameState === 'WIN') {
     drawOverlay('YOU WIN!', 'ENTER to next level');
+  } else if (gameState === 'PAUSED') {
+    drawOverlay('PAUSED', 'P to resume');
   }
 }
 
@@ -651,6 +675,8 @@ function render() {
 // SECTION 9: Game Loop
 // =============================================================================
 function update(dt) {
+  if (gameState === 'PAUSED' || gameState === 'MENU' || gameState === 'GAMEOVER' || gameState === 'WIN') return;
+
   // DAS processing
   for (const code of Object.keys(keys)) {
     if (!dasState[code]) continue;
@@ -700,6 +726,7 @@ function update(dt) {
     if (clearTimer >= CLEAR_FLASH_MS) {
       applyClears();
       if (virusCount <= 0) {
+        if (score > highScore) highScore = score;
         gameState = 'WIN';
         return;
       }
