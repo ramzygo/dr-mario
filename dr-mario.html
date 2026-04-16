@@ -313,8 +313,7 @@ function stepPostClearGravity() {
           anyMoved = true;
         }
       } else if (cell.part === 'top') {
-        if (!board[r+2]?.[c]) {
-          board[r+2] = board[r+2] || [];
+        if (r + 2 < BOARD_ROWS && board[r+1][c]?.part === 'bottom' && !board[r+2][c]) {
           board[r+2][c] = board[r+1][c];
           board[r+1][c] = board[r][c];
           board[r][c] = null;
