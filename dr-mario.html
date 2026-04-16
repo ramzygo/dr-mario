@@ -1,0 +1,704 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Dr. Mario</title>
+<style>
+  body {
+    background: #111;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    margin: 0;
+    font-family: monospace;
+  }
+  canvas {
+    image-rendering: pixelated;
+  }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+// =============================================================================
+// SECTION 1: Constants & Configuration
+// =============================================================================
+const CELL = 20;
+const BOARD_COLS = 8;
+const BOARD_ROWS = 16;
+const SIDEBAR_W = 140;
+const CANVAS_W = BOARD_COLS * CELL + SIDEBAR_W;
+const CANVAS_H = BOARD_ROWS * CELL + 40; // 40px top bar for neck/title
+
+const BOARD_X = 0;        // board left edge on canvas
+const BOARD_Y = 40;       // board top edge on canvas (below neck)
+
+const COLORS = {
+  red:    { base: '#d03030', light: '#ff8080', dark: '#700000' },
+  yellow: { base: '#d0b020', light: '#ffe060', dark: '#705000' },
+  blue:   { base: '#2050d0', light: '#7090ff', dark: '#001070' },
+};
+
+const COLOR_NAMES = ['red', 'yellow', 'blue'];
+
+// Gravity ms per row by level (0-indexed)
+const GRAVITY_MS = [1000,900,800,700,600,500,400,300,250,200,150,120,100,80,70,60,50,45,40,35];
+// Virus counts per level
+const VIRUS_COUNTS = [4,8,12,16,20,24,28,32,36,40,44,48,52,56,60,64,68,72,76,80];
+
+const DAS_DELAY  = 170;
+const DAS_REPEAT = 50;
+const LOCK_DELAY = 300;
+const CLEAR_FLASH_MS = 600;
+const CLEAR_FLASH_INTERVAL = 100;
+const POST_GRAVITY_MS = 80;
+
+// =============================================================================
+// SECTION 2: Canvas Setup
+// =============================================================================
+const canvas = document.getElementById('game');
+canvas.width  = CANVAS_W;
+canvas.height = CANVAS_H;
+const ctx = canvas.getContext('2d');
+
+// =============================================================================
+// SECTION 3: Data Structures & State
+// =============================================================================
+let board = [];
+let capsule = null;      // active falling capsule
+let nextCapsule = null;
+let gameState = 'MENU';  // MENU SPAWNING FALLING LOCKING CLEARING GRAVITY GAMEOVER WIN
+let score = 0;
+let level = 0;
+let virusCount = 0;
+let chainCount = 0;
+let clearSet = new Set();  // "row,col" keys of cells being cleared
+
+// Timers
+let gravityAccum = 0;
+let lockTimer = 0;
+let clearTimer = 0;
+let gravityPostAccum = 0;
+let flashPhase = 0;
+
+// Input
+const keys = {};
+const dasState = {};
+
+// =============================================================================
+// SECTION 4: Board & Capsule Helpers
+// =============================================================================
+function makeBoard() {
+  return Array.from({ length: BOARD_ROWS }, () => Array(BOARD_COLS).fill(null));
+}
+
+function randomColor() {
+  return COLOR_NAMES[Math.floor(Math.random() * 3)];
+}
+
+function generateCapsule() {
+  return {
+    row: 0,
+    col: 3,
+    orientation: 'horizontal', // 'horizontal' | 'vertical'
+    colors: [randomColor(), randomColor()],
+  };
+}
+
+// Returns [row,col] of both cells occupied by capsule
+function capsuleCells(c) {
+  const a = [c.row, c.col];
+  const b = c.orientation === 'horizontal' ? [c.row, c.col + 1] : [c.row + 1, c.col];
+  return [a, b];
+}
+
+function isInBounds(r, c) {
+  return r >= 0 && r < BOARD_ROWS && c >= 0 && c < BOARD_COLS;
+}
+
+function capsuleFits(c) {
+  for (const [r, col] of capsuleCells(c)) {
+    if (!isInBounds(r, col) || board[r][col]) return false;
+  }
+  return true;
+}
+
+function getPartner(r, c, part) {
+  if (part === 'left')   return isInBounds(r, c+1) ? { row: r, col: c+1 } : null;
+  if (part === 'right')  return isInBounds(r, c-1) ? { row: r, col: c-1 } : null;
+  if (part === 'top')    return isInBounds(r+1, c) ? { row: r+1, col: c } : null;
+  if (part === 'bottom') return isInBounds(r-1, c) ? { row: r-1, col: c } : null;
+  return null;
+}
+
+// =============================================================================
+// SECTION 5: Virus Placement
+// =============================================================================
+function wouldCreate3InARow(r, c, color) {
+  // Check horizontal: need 2 same-color neighbors on either side
+  let left = 0, right = 0, up = 0, down = 0;
+  for (let i = 1; i <= 2; i++) {
+    if (c - i >= 0 && board[r][c-i]?.color === color) left++; else break;
+  }
+  for (let i = 1; i <= 2; i++) {
+    if (c + i < BOARD_COLS && board[r][c+i]?.color === color) right++; else break;
+  }
+  if (left + right >= 2) return true;
+
+  for (let i = 1; i <= 2; i++) {
+    if (r - i >= 0 && board[r-i][c]?.color === color) up++; else break;
+  }
+  for (let i = 1; i <= 2; i++) {
+    if (r + i < BOARD_ROWS && board[r+i][c]?.color === color) down++; else break;
+  }
+  if (up + down >= 2) return true;
+
+  return false;
+}
+
+function placeViruses(count) {
+  let placed = 0;
+  let attempts = 0;
+  const maxAttempts = count * 30;
+  while (placed < count && attempts < maxAttempts) {
+    attempts++;
+    const r = 8 + Math.floor(Math.random() * 8);
+    const c = Math.floor(Math.random() * BOARD_COLS);
+    if (board[r][c]) continue;
+    const shuffled = [...COLOR_NAMES].sort(() => Math.random() - 0.5);
+    for (const color of shuffled) {
+      if (!wouldCreate3InARow(r, c, color)) {
+        board[r][c] = { color, type: 'virus', part: 'single' };
+        virusCount++;
+        placed++;
+        break;
+      }
+    }
+  }
+}
+
+// =============================================================================
+// SECTION 6: Game Logic
+// =============================================================================
+function initGame() {
+  board = makeBoard();
+  score = 0;
+  virusCount = 0;
+  chainCount = 0;
+  clearSet = new Set();
+  gravityAccum = 0;
+  lockTimer = 0;
+  clearTimer = 0;
+  gravityPostAccum = 0;
+  flashPhase = 0;
+  placeViruses(VIRUS_COUNTS[level]);
+  nextCapsule = generateCapsule();
+  spawnCapsule();
+}
+
+function spawnCapsule() {
+  capsule = nextCapsule;
+  capsule.row = 0;
+  capsule.col = 3;
+  capsule.orientation = 'horizontal';
+  nextCapsule = generateCapsule();
+  gravityAccum = 0;
+
+  if (!capsuleFits(capsule)) {
+    gameState = 'GAMEOVER';
+    return;
+  }
+  gameState = 'FALLING';
+}
+
+function lockCapsule() {
+  const [[r1,c1],[r2,c2]] = capsuleCells(capsule);
+  const isH = capsule.orientation === 'horizontal';
+  board[r1][c1] = { color: capsule.colors[0], type: 'capsule', part: isH ? 'left' : 'top' };
+  board[r2][c2] = { color: capsule.colors[1], type: 'capsule', part: isH ? 'right' : 'bottom' };
+  capsule = null;
+
+  const matches = findMatches();
+  if (matches.size > 0) {
+    clearSet = matches;
+    fixOrphanedHalves(clearSet);
+    clearTimer = 0;
+    flashPhase = 0;
+    gameState = 'CLEARING';
+  } else {
+    chainCount = 0;
+    spawnCapsule();
+  }
+}
+
+function findMatches() {
+  const toRemove = new Set();
+
+  // Horizontal
+  for (let r = 0; r < BOARD_ROWS; r++) {
+    let run = 1;
+    for (let c = 1; c < BOARD_COLS; c++) {
+      const prev = board[r][c-1], curr = board[r][c];
+      if (curr && prev && curr.color === prev.color) {
+        run++;
+      } else {
+        if (run >= 4) for (let k = c - run; k < c; k++) toRemove.add(`${r},${k}`);
+        run = 1;
+      }
+    }
+    if (run >= 4) for (let k = BOARD_COLS - run; k < BOARD_COLS; k++) toRemove.add(`${r},${k}`);
+  }
+
+  // Vertical
+  for (let c = 0; c < BOARD_COLS; c++) {
+    let run = 1;
+    for (let r = 1; r < BOARD_ROWS; r++) {
+      const prev = board[r-1][c], curr = board[r][c];
+      if (curr && prev && curr.color === prev.color) {
+        run++;
+      } else {
+        if (run >= 4) for (let k = r - run; k < r; k++) toRemove.add(`${k},${c}`);
+        run = 1;
+      }
+    }
+    if (run >= 4) for (let k = BOARD_ROWS - run; k < BOARD_ROWS; k++) toRemove.add(`${k},${c}`);
+  }
+
+  return toRemove;
+}
+
+function fixOrphanedHalves(toRemove) {
+  for (const key of toRemove) {
+    const [r, c] = key.split(',').map(Number);
+    const cell = board[r][c];
+    if (!cell || cell.type !== 'capsule') continue;
+    const p = getPartner(r, c, cell.part);
+    if (p && !toRemove.has(`${p.row},${p.col}`)) {
+      board[p.row][p.col] = { ...board[p.row][p.col], part: 'single' };
+    }
+  }
+}
+
+function applyClears() {
+  let virusesCleared = 0;
+  for (const key of clearSet) {
+    const [r, c] = key.split(',').map(Number);
+    if (board[r][c]?.type === 'virus') virusesCleared++;
+    board[r][c] = null;
+  }
+  virusCount -= virusesCleared;
+  // Scoring: base * chain multiplier
+  const base = [0, 100, 200, 400, 800];
+  score += (base[Math.min(virusesCleared, 4)] || 0) * Math.max(1, chainCount);
+  chainCount++;
+  clearSet = new Set();
+}
+
+function stepPostClearGravity() {
+  let anyMoved = false;
+
+  for (let r = BOARD_ROWS - 2; r >= 0; r--) {
+    for (let c = 0; c < BOARD_COLS; c++) {
+      const cell = board[r][c];
+      if (!cell || cell.type === 'virus') continue;
+
+      if (cell.part === 'left') {
+        const right = board[r][c+1];
+        if (right?.part === 'right' && !board[r+1][c] && !board[r+1][c+1]) {
+          board[r+1][c]   = board[r][c];
+          board[r+1][c+1] = board[r][c+1];
+          board[r][c] = null;
+          board[r][c+1] = null;
+          anyMoved = true;
+        }
+      } else if (cell.part === 'top') {
+        if (!board[r+2]?.[c]) {
+          board[r+2] = board[r+2] || [];
+          board[r+2][c] = board[r+1][c];
+          board[r+1][c] = board[r][c];
+          board[r][c] = null;
+          anyMoved = true;
+        }
+      } else if (cell.part === 'single') {
+        if (!board[r+1][c]) {
+          board[r+1][c] = board[r][c];
+          board[r][c] = null;
+          anyMoved = true;
+        }
+      }
+    }
+  }
+  return anyMoved;
+}
+
+// =============================================================================
+// SECTION 7: Input
+// =============================================================================
+function handleAction(code) {
+  if (gameState === 'MENU' || gameState === 'GAMEOVER' || gameState === 'WIN') {
+    if (code === 'Enter' || code === 'Space') {
+      level = 0;
+      initGame();
+    }
+    return;
+  }
+
+  if (gameState !== 'FALLING' && gameState !== 'LOCKING') return;
+
+  if (code === 'ArrowLeft')  tryMove(0, -1);
+  if (code === 'ArrowRight') tryMove(0, 1);
+  if (code === 'ArrowDown')  tryMove(1, 0);
+  if (code === 'KeyZ' || code === 'ArrowUp') tryRotate('cw');
+  if (code === 'KeyX') tryRotate('ccw');
+  if (code === 'Space') hardDrop();
+}
+
+function tryMove(dr, dc) {
+  const test = { ...capsule, row: capsule.row + dr, col: capsule.col + dc };
+  if (capsuleFits(test)) {
+    capsule.row = test.row;
+    capsule.col = test.col;
+    if (dr > 0 && gameState === 'LOCKING') lockTimer = 0; // reset if moved down
+    if (dr === 0 && gameState === 'LOCKING') lockTimer = 0; // side-move resets lock
+  } else if (dr > 0 && gameState === 'FALLING') {
+    gameState = 'LOCKING';
+    lockTimer = 0;
+  }
+}
+
+const ROTATION_TABLE = {
+  'horizontal,cw':  { to: 'vertical',   swap: false },
+  'horizontal,ccw': { to: 'vertical',   swap: true  },
+  'vertical,cw':    { to: 'horizontal', swap: true  },
+  'vertical,ccw':   { to: 'horizontal', swap: false },
+};
+
+function tryRotate(dir) {
+  const key = `${capsule.orientation},${dir}`;
+  const { to, swap } = ROTATION_TABLE[key];
+  const newColors = swap ? [capsule.colors[1], capsule.colors[0]] : [...capsule.colors];
+  for (const offset of [0, 1, -1]) {
+    const test = { ...capsule, orientation: to, colors: newColors, col: capsule.col + offset };
+    if (capsuleFits(test)) {
+      Object.assign(capsule, test);
+      if (gameState === 'LOCKING') lockTimer = 0;
+      return;
+    }
+  }
+}
+
+function hardDrop() {
+  while (true) {
+    const test = { ...capsule, row: capsule.row + 1 };
+    if (capsuleFits(test)) capsule.row++;
+    else break;
+  }
+  lockCapsule();
+}
+
+window.addEventListener('keydown', e => {
+  const code = e.code;
+  if (['ArrowLeft','ArrowRight','ArrowDown','ArrowUp','Space','KeyZ','KeyX','Enter'].includes(code)) {
+    e.preventDefault();
+  }
+  if (!keys[code]) {
+    keys[code] = true;
+    dasState[code] = { held: 0, fired: false };
+    handleAction(code);
+  }
+});
+
+window.addEventListener('keyup', e => {
+  delete keys[e.code];
+  delete dasState[e.code];
+});
+
+// =============================================================================
+// SECTION 8: Rendering
+// =============================================================================
+function drawCell(r, c, color, part, isVirus, flash) {
+  const x = BOARD_X + c * CELL;
+  const y = BOARD_Y + r * CELL;
+  const col = COLORS[color];
+  const fillColor = flash ? '#ffffff' : col.base;
+
+  ctx.fillStyle = fillColor;
+  ctx.fillRect(x, y, CELL, CELL);
+
+  if (!flash) {
+    // Highlight
+    ctx.fillStyle = col.light;
+    if (part === 'left' || part === 'single' || part === 'top') {
+      ctx.fillRect(x + 2, y + 2, 3, CELL - 4);
+      ctx.fillRect(x + 2, y + 2, CELL - 4, 3);
+    }
+
+    if (isVirus) {
+      // Simple virus face
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(x + 4, y + 5, 3, 3);
+      ctx.fillRect(x + 13, y + 5, 3, 3);
+      ctx.fillStyle = '#000';
+      ctx.fillRect(x + 5, y + 6, 2, 2);
+      ctx.fillRect(x + 14, y + 6, 2, 2);
+      ctx.fillStyle = col.dark;
+      ctx.fillRect(x + 5, y + 13, 10, 2);
+      ctx.fillRect(x + 5, y + 15, 2, 2);
+      ctx.fillRect(x + 13, y + 15, 2, 2);
+    }
+  }
+
+  // Border
+  ctx.strokeStyle = flash ? '#aaaaff' : col.dark;
+  ctx.lineWidth = 1;
+  ctx.strokeRect(x + 0.5, y + 0.5, CELL - 1, CELL - 1);
+}
+
+function drawCapsuleCell(r, c, color, part) {
+  drawCell(r, c, color, part, false, false);
+}
+
+function drawBottle() {
+  // Background for board area
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(BOARD_X, BOARD_Y, BOARD_COLS * CELL, BOARD_ROWS * CELL);
+
+  // Bottle neck (top center, 2 cells wide)
+  const neckX = BOARD_X + 3 * CELL;
+  const neckW = 2 * CELL;
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(neckX, 0, neckW, BOARD_Y);
+
+  // Neck walls
+  ctx.strokeStyle = '#88aacc';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(neckX, BOARD_Y);
+  ctx.lineTo(neckX, 4);
+  ctx.moveTo(neckX + neckW, BOARD_Y);
+  ctx.lineTo(neckX + neckW, 4);
+  ctx.stroke();
+
+  // Bottle body border
+  ctx.strokeStyle = '#88aacc';
+  ctx.lineWidth = 3;
+  ctx.strokeRect(BOARD_X + 1.5, BOARD_Y + 1.5, BOARD_COLS * CELL - 3, BOARD_ROWS * CELL - 3);
+
+  // Corner caps to connect neck to body
+  ctx.fillStyle = '#88aacc';
+  ctx.fillRect(BOARD_X, BOARD_Y, 3 * CELL, 3);       // top-left horizontal
+  ctx.fillRect(BOARD_X + 5 * CELL, BOARD_Y, 3 * CELL, 3); // top-right horizontal
+}
+
+function drawSidebar() {
+  const sx = BOARD_COLS * CELL + 10;
+  ctx.fillStyle = '#ccddff';
+  ctx.font = 'bold 13px monospace';
+
+  ctx.fillText('SCORE', sx, 50);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '13px monospace';
+  ctx.fillText(String(score).padStart(7, '0'), sx, 68);
+
+  ctx.fillStyle = '#ccddff';
+  ctx.font = 'bold 13px monospace';
+  ctx.fillText('LEVEL', sx, 100);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText(String(level).padStart(2, '0'), sx, 118);
+
+  ctx.fillStyle = '#ccddff';
+  ctx.font = 'bold 13px monospace';
+  ctx.fillText('VIRUS', sx, 150);
+  ctx.fillStyle = '#ff6060';
+  ctx.fillText(String(virusCount).padStart(2, '0'), sx, 168);
+
+  // Next capsule preview
+  ctx.fillStyle = '#ccddff';
+  ctx.font = 'bold 13px monospace';
+  ctx.fillText('NEXT', sx, 210);
+
+  if (nextCapsule) {
+    const px = sx;
+    const py = 225;
+    const nc = nextCapsule;
+    // Draw left/top half
+    ctx.fillStyle = COLORS[nc.colors[0]].base;
+    ctx.fillRect(px, py, CELL, CELL);
+    ctx.strokeStyle = COLORS[nc.colors[0]].dark;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(px + 0.5, py + 0.5, CELL - 1, CELL - 1);
+    // Draw right/bottom half
+    const px2 = nc.orientation === 'horizontal' ? px + CELL : px;
+    const py2 = nc.orientation === 'horizontal' ? py : py + CELL;
+    ctx.fillStyle = COLORS[nc.colors[1]].base;
+    ctx.fillRect(px2, py2, CELL, CELL);
+    ctx.strokeStyle = COLORS[nc.colors[1]].dark;
+    ctx.strokeRect(px2 + 0.5, py2 + 0.5, CELL - 1, CELL - 1);
+  }
+}
+
+function drawBoard() {
+  for (let r = 0; r < BOARD_ROWS; r++) {
+    for (let c = 0; c < BOARD_COLS; c++) {
+      const cell = board[r][c];
+      if (!cell) continue;
+      const flashing = clearSet.has(`${r},${c}`) && flashPhase % 2 === 1;
+      drawCell(r, c, cell.color, cell.part, cell.type === 'virus', flashing);
+    }
+  }
+}
+
+function drawActiveCapsule() {
+  if (!capsule) return;
+  const [[r1,c1],[r2,c2]] = capsuleCells(capsule);
+  const isH = capsule.orientation === 'horizontal';
+  drawCapsuleCell(r1, c1, capsule.colors[0], isH ? 'left' : 'top');
+  drawCapsuleCell(r2, c2, capsule.colors[1], isH ? 'right' : 'bottom');
+}
+
+function drawGhostCapsule() {
+  if (!capsule || gameState !== 'FALLING') return;
+  let ghost = { ...capsule };
+  while (true) {
+    const test = { ...ghost, row: ghost.row + 1 };
+    if (capsuleFits(test)) ghost.row++;
+    else break;
+  }
+  if (ghost.row === capsule.row) return;
+  const [[r1,c1],[r2,c2]] = capsuleCells(ghost);
+  ctx.globalAlpha = 0.25;
+  drawCapsuleCell(r1, c1, capsule.colors[0], ghost.orientation === 'horizontal' ? 'left' : 'top');
+  drawCapsuleCell(r2, c2, capsule.colors[1], ghost.orientation === 'horizontal' ? 'right' : 'bottom');
+  ctx.globalAlpha = 1.0;
+}
+
+function drawOverlay(text, sub) {
+  ctx.fillStyle = 'rgba(0,0,0,0.65)';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 28px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText(text, canvas.width / 2, canvas.height / 2 - 20);
+  ctx.font = '14px monospace';
+  ctx.fillStyle = '#aaaaff';
+  ctx.fillText(sub, canvas.width / 2, canvas.height / 2 + 15);
+  ctx.textAlign = 'left';
+}
+
+function render() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#0a0a1a';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  drawBottle();
+  drawBoard();
+  drawGhostCapsule();
+  drawActiveCapsule();
+  drawSidebar();
+
+  if (gameState === 'MENU') {
+    drawOverlay('DR. MARIO', 'ENTER / SPACE to start');
+  } else if (gameState === 'GAMEOVER') {
+    drawOverlay('GAME OVER', 'ENTER / SPACE to retry');
+  } else if (gameState === 'WIN') {
+    drawOverlay('YOU WIN!', 'ENTER / SPACE to continue');
+  }
+}
+
+// =============================================================================
+// SECTION 9: Game Loop
+// =============================================================================
+function update(dt) {
+  // DAS processing
+  for (const code of Object.keys(keys)) {
+    if (!dasState[code]) continue;
+    const d = dasState[code];
+    d.held += dt;
+    if (!d.fired && d.held >= DAS_DELAY) {
+      d.fired = true;
+      d.held = DAS_DELAY;
+    }
+    if (d.fired) {
+      d.held += 0; // already counted above
+      const repeats = Math.floor((d.held - DAS_DELAY) / DAS_REPEAT);
+      if (repeats > (d.repeats || 0)) {
+        d.repeats = repeats;
+        if (['ArrowLeft','ArrowRight','ArrowDown'].includes(code)) handleAction(code);
+      }
+    }
+  }
+
+  if (gameState === 'FALLING') {
+    gravityAccum += dt;
+    const interval = GRAVITY_MS[Math.min(level, GRAVITY_MS.length - 1)];
+    while (gravityAccum >= interval) {
+      gravityAccum -= interval;
+      const test = { ...capsule, row: capsule.row + 1 };
+      if (capsuleFits(test)) {
+        capsule.row++;
+      } else {
+        gameState = 'LOCKING';
+        lockTimer = 0;
+        gravityAccum = 0;
+        break;
+      }
+    }
+  }
+
+  if (gameState === 'LOCKING') {
+    lockTimer += dt;
+    if (lockTimer >= LOCK_DELAY) {
+      lockCapsule();
+    }
+  }
+
+  if (gameState === 'CLEARING') {
+    clearTimer += dt;
+    flashPhase = Math.floor(clearTimer / CLEAR_FLASH_INTERVAL);
+    if (clearTimer >= CLEAR_FLASH_MS) {
+      applyClears();
+      if (virusCount <= 0) {
+        gameState = 'WIN';
+        return;
+      }
+      gravityPostAccum = 0;
+      gameState = 'GRAVITY';
+    }
+  }
+
+  if (gameState === 'GRAVITY') {
+    gravityPostAccum += dt;
+    if (gravityPostAccum >= POST_GRAVITY_MS) {
+      gravityPostAccum = 0;
+      const moved = stepPostClearGravity();
+      if (!moved) {
+        const matches = findMatches();
+        if (matches.size > 0) {
+          clearSet = matches;
+          fixOrphanedHalves(clearSet);
+          clearTimer = 0;
+          flashPhase = 0;
+          gameState = 'CLEARING';
+        } else {
+          chainCount = 0;
+          spawnCapsule();
+        }
+      }
+    }
+  }
+}
+
+let lastTime = 0;
+function loop(timestamp) {
+  const dt = Math.min(timestamp - lastTime, 100); // cap dt to avoid spiral
+  lastTime = timestamp;
+  update(dt);
+  render();
+  requestAnimationFrame(loop);
+}
+
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
